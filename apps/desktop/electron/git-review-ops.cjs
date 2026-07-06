@@ -64,7 +64,20 @@ function runGh(args, cwd, ghBin) {
 }
 
 function gitFor(cwd, gitBin) {
-  return simpleGit({ baseDir: cwd, binary: gitBin || 'git', maxConcurrentProcesses: 4, trimmed: false })
+  // `allowUnsafeCustomBinary`: simple-git v3 rejects a custom `binary` path that
+  // contains spaces or other shell-meta chars (its command-injection guard).
+  // On Windows git lives at `C:\Program Files\Git\cmd\git.exe` — the space in
+  // "Program Files" trips that guard, so construction THROWS and every review op
+  // is swallowed into an empty result ("NO DIFFS"). The path isn't user input;
+  // it comes from resolveGitBinary()'s probe of known install locations, so the
+  // value is trusted and opting out of the guard is safe here.
+  return simpleGit({
+    baseDir: cwd,
+    binary: gitBin || 'git',
+    maxConcurrentProcesses: 4,
+    trimmed: false,
+    unsafe: { allowUnsafeCustomBinary: true }
+  })
 }
 
 // simple-git reports renames as `old => new` (and `dir/{old => new}/f`); resolve
@@ -687,6 +700,7 @@ async function repoStatus(repoPath, gitBin) {
 module.exports = {
   branchBase,
   fileDiffVsHead,
+  gitFor,
   repoStatus,
   resolveRenamePath,
   reviewCommit,
