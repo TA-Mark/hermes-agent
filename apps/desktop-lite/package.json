@@ -1,0 +1,75 @@
+{
+  "name": "hermes-lite",
+  "productName": "Hermes Lite",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Thin Electron shell that loads the Hermes web dashboard from a locally-spawned backend. Custom (non-upstream).",
+  "main": "electron/main.cjs",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "scripts": {
+    "start": "electron .",
+    "start:verbose": "cross-env HERMES_LITE_DEBUG=1 electron .",
+    "build": "node scripts/write-build-stamp.cjs",
+    "dist": "npm run build && electron-builder",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:linux": "npm run build && electron-builder --linux"
+  },
+  "devDependencies": {
+    "cross-env": "^10.1.0",
+    "electron": "40.10.2",
+    "electron-builder": "^26.8.1"
+  },
+  "build": {
+    "electronVersion": "40.10.2",
+    "appId": "com.custom.hermeslite",
+    "productName": "Hermes Lite",
+    "executableName": "HermesLite",
+    "artifactName": "Hermes-Lite-${version}-${os}-${arch}.${ext}",
+    "icon": "assets/icon",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**",
+      "!electron/**/*.test.cjs",
+      "assets/**",
+      "package.json"
+    ],
+    "beforeBuild": "scripts/before-build.cjs",
+    "extraResources": [
+      {
+        "from": "build/install-stamp.json",
+        "to": "install-stamp.json"
+      }
+    ],
+    "asar": true,
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "signAndEditExecutable": false
+    },
+    "linux": {
+      "category": "Development",
+      "target": [
+        "AppImage"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "shortcutName": "Hermes Lite",
+      "uninstallDisplayName": "Hermes Lite"
+    }
+  }
+}

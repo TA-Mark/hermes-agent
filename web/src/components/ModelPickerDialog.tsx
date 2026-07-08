@@ -390,6 +390,16 @@ export function ModelPickerDialog(props: Props) {
           )}
 
           <div className="flex items-center gap-2 ml-auto">
+            <Button
+              ghost
+              onClick={() => {
+                onClose();
+                window.location.assign("/providers");
+              }}
+              disabled={applying}
+            >
+              Connect provider…
+            </Button>
             <Button outlined onClick={onClose} disabled={applying}>
               Cancel
             </Button>
