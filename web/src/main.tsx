@@ -12,6 +12,10 @@ import { HERMES_BASE_PATH } from "./lib/api";
 // can access React, components, etc. immediately.
 exposePluginSDK();
 
+// Fork-owned: register the "Provider tools" panel into the Keys tab's
+// env:bottom slot (test-key + custom-endpoint). Import for side effect only.
+import "./plugins-fork/env-provider-tools";
+
 createRoot(document.getElementById("root")!).render(
   <BrowserRouter basename={HERMES_BASE_PATH || undefined}>
     <I18nProvider>

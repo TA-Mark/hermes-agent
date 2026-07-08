@@ -78,7 +78,6 @@ import DocsPage from "@/pages/DocsPage";
 import EnvPage from "@/pages/EnvPage";
 import FilesPage from "@/pages/FilesPage";
 import GitReviewPage from "@/pages/GitReviewPage";
-import ProvidersPage from "@/pages/ProvidersPage";
 import SessionsPage from "@/pages/SessionsPage";
 import LogsPage from "@/pages/LogsPage";
 import AnalyticsPage from "@/pages/AnalyticsPage";
@@ -138,7 +137,6 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/sessions": SessionsPage,
   "/files": FilesPage,
   "/git": GitReviewPage,
-  "/providers": ProvidersPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
   "/logs": LogsPage,
@@ -174,7 +172,6 @@ const BUILTIN_NAV_REST: NavItem[] = [
   },
   { path: "/files", label: "Files", icon: FolderOpen },
   { path: "/git", label: "Git", icon: GitBranch },
-  { path: "/providers", label: "Providers", icon: Plug },
   {
     path: "/analytics",
     labelKey: "analytics",

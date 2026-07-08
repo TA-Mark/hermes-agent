@@ -145,7 +145,31 @@ Lỗi lint tồn đọng `App.tsx:917` (`setUpdateConfirmInfo`) là nợ CÓ S�
 Rủi ro (đã xử lý trong UI): git ops chạy trên máy chạy backend. Remote gateway →
 chạy trên máy remote. UI đã cảnh báo rõ.
 
-## PHASE 2.5 — Hệ thống kết nối LLM/Provider đầy đủ trên web/ (P0)
+## PHASE 2.5 — Hệ thống kết nối LLM/Provider (P0) ✅ ĐỔI HƯỚNG: hợp nhất vào Keys tab
+
+> **CẬP NHẬT (đổi hướng sau khi review overlap):** Trang `/providers` custom đã bị GỠ.
+> Lý do: ~70% trùng Keys tab (`/env` = `EnvPage.tsx` upstream) — OAuth login đã có sẵn qua
+> `OAuthProvidersCard`, nhập/xóa key thô đã có qua provider group, cả hai gọi CÙNG endpoint
+> backend. Giá trị riêng còn lại (test key sống + custom OpenAI-compatible endpoint) được hợp
+> nhất vào ĐÁY Keys tab qua **PluginSlot `env:bottom`** — KHÔNG sửa `EnvPage.tsx`.
+>
+> **Đã làm (update-safe, điểm chạm upstream ròng = 1 dòng):**
+> - Tạo `web/src/plugins-fork/env-provider-tools.tsx` (fork-owned) — 2 card: (1) Test & lưu API
+>   key cho 4 provider probe được (OpenRouter/OpenAI/xAI/Gemini); (2) Custom OpenAI-compatible
+>   endpoint (probe `/v1/models` → auto-pick model[0] → `setModelWithKey`). Cuối file gọi
+>   `registerSlot("fork-env-provider-tools", "env:bottom", EnvProviderTools)`.
+> - `web/src/main.tsx` — thêm 1 dòng `import "./plugins-fork/env-provider-tools";` sau
+>   `exposePluginSDK()`. **Đây là điểm chạm upstream DUY NHẤT** còn lại.
+> - `web/src/App.tsx` — GỠ 3 dòng wiring `/providers` (import + route + nav). Giữ import `Plug`
+>   (còn dùng cho `/mcp`). Net: App.tsx trở về gần upstream hơn.
+> - XÓA: `ProvidersPage.tsx`, `ProvidersPage.dialog.tsx`, `useProviderConnect.ts`. GIỮ
+>   `providerApi.ts` (fork-owned) — panel mới import `validateProviderCredential` + `setModelWithKey`.
+> - i18n: hardcode tiếng Việt (thêm key required vào `types.ts` sẽ buộc sửa cả 16 locale → build fail).
+> - `registerSlot` signature THẬT là `(plugin, slot, component)` (slots.ts:125), KHÁC sdk.d.ts.
+> - Verify: typecheck ✅ + build ✅ + file mới lint sạch ✅ (33 lỗi lint còn lại là nợ upstream ở
+>   `PluginPage.tsx`/`themes/context.tsx`, không phải do thay đổi này).
+>
+> Phần bên dưới GIỮ để tham chiếu bối cảnh điều tra ban đầu (trước khi đổi hướng).
 
 **Vấn đề phát hiện khi chạy thử:** web/ ModelPickerDialog chỉ LIỆT KÊ + chọn model
 của provider đã auth; KHÔNG có cách nhập api_key / base_url / bắt đầu OAuth cho
