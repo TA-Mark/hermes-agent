@@ -13,7 +13,7 @@ const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 
-const { runBootstrap, parseStageResult, resolveInstallScript, ensureForkCheckout } =
+const { runBootstrap, parseStageResult, resolveInstallScript, ensureForkCheckout, downloadInstallScript } =
   require('./bootstrap-runner.cjs')
 const { loadInstallStamp } = require('./hermes-paths.cjs')
 
@@ -187,4 +187,104 @@ test('ensureForkCheckout: no-op when a repo is already present', async () => {
   assert.strictEqual(r.reason, 'already-present')
   assert.ok(logs.some(e => /already present/.test(e.line)), 'should log the skip')
   fs.rmSync(tmp, { recursive: true, force: true })
+})
+
+test('downloadInstallScript retries a transient 429 then succeeds', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-lite-retry-'))
+  const dest = path.join(tmp, 'install-script')
+  const slept = []
+  let calls = 0
+  const attempt = () => {
+    calls += 1
+    if (calls < 3) {
+      const err = new Error(`Failed to download: HTTP 429`)
+      err.statusCode = 429
+      err.transient = true
+      return Promise.reject(err)
+    }
+    fs.writeFileSync(dest, '# ok')
+    return Promise.resolve(dest)
+  }
+
+  const retries = []
+  const out = await downloadInstallScript('deadbeef', dest, {
+    _attempt: attempt,
+    _sleep: ms => {
+      slept.push(ms)
+      return Promise.resolve()
+    },
+    onRetry: info => retries.push(info),
+  })
+
+  assert.strictEqual(out, dest)
+  assert.strictEqual(calls, 3, 'should attempt three times (two 429s + success)')
+  assert.strictEqual(slept.length, 2, 'should back off twice')
+  assert.ok(slept[1] > slept[0], 'backoff should grow')
+  assert.strictEqual(retries.length, 2, 'onRetry fires once per retry')
+
+  fs.rmSync(tmp, { recursive: true, force: true })
+})
+
+test('downloadInstallScript honors Retry-After over exponential backoff', async () => {
+  const dest = path.join(os.tmpdir(), 'nope-retry-after')
+  const slept = []
+  let calls = 0
+  const attempt = () => {
+    calls += 1
+    if (calls === 1) {
+      const err = new Error('HTTP 429')
+      err.statusCode = 429
+      err.transient = true
+      err.retryAfterMs = 2500
+      return Promise.reject(err)
+    }
+    return Promise.resolve(dest)
+  }
+  await downloadInstallScript('deadbeef', dest, {
+    _attempt: attempt,
+    _sleep: ms => {
+      slept.push(ms)
+      return Promise.resolve()
+    },
+  })
+  assert.strictEqual(slept[0], 2500, 'should sleep for the Retry-After hint')
+})
+
+test('downloadInstallScript does NOT retry a non-transient 404', async () => {
+  const dest = path.join(os.tmpdir(), 'nope-404')
+  let calls = 0
+  const attempt = () => {
+    calls += 1
+    const err = new Error('HTTP 404')
+    err.statusCode = 404
+    err.transient = false
+    return Promise.reject(err)
+  }
+  await assert.rejects(
+    () => downloadInstallScript('deadbeef', dest, { _attempt: attempt, _sleep: () => Promise.resolve() }),
+    /404/
+  )
+  assert.strictEqual(calls, 1, 'a 404 should fail fast with no retry')
+})
+
+test('downloadInstallScript gives up after maxAttempts transient failures', async () => {
+  const dest = path.join(os.tmpdir(), 'nope-exhaust')
+  let calls = 0
+  const attempt = () => {
+    calls += 1
+    const err = new Error('HTTP 503')
+    err.statusCode = 503
+    err.transient = true
+    return Promise.reject(err)
+  }
+  await assert.rejects(
+    () =>
+      downloadInstallScript('deadbeef', dest, {
+        _attempt: attempt,
+        _sleep: () => Promise.resolve(),
+        maxAttempts: 3,
+      }),
+    /503/
+  )
+  assert.strictEqual(calls, 3, 'should stop at maxAttempts')
 })

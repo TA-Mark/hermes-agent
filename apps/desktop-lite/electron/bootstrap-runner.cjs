@@ -115,81 +115,119 @@ function cachedScriptPath(hermesHome, commit) {
   return path.join(bootstrapCacheDir(hermesHome), `install-${commit}.${process.platform === 'win32' ? 'ps1' : 'sh'}`)
 }
 
-function downloadInstallScript(commit, destPath, opts = {}) {
-  // Fetch from GitHub raw at the pinned commit. The raw URL with a SHA
-  // is immutable (unlike a branch ref), so we don't need integrity
-  // verification beyond "did the file we wrote pass a syntax probe."
+// HTTP statuses worth retrying: request timeout / too-early, throttling, and
+// transient server-side faults. A 404 (unpushed commit) is NOT here — retrying
+// it is futile and should fall through to the installed-agent fallback fast.
+const TRANSIENT_HTTP_STATUS = new Set([408, 425, 429, 500, 502, 503, 504])
+const DOWNLOAD_MAX_ATTEMPTS = 4
+const DOWNLOAD_BASE_BACKOFF_MS = 800
+const DOWNLOAD_MAX_BACKOFF_MS = 8000
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+// Parse a Retry-After header (delta-seconds or HTTP-date) into ms, or null.
+function parseRetryAfterMs(value) {
+  if (!value) return null
+  const secs = Number(value)
+  if (Number.isFinite(secs)) return Math.max(0, secs * 1000)
+  const when = Date.parse(value)
+  if (!Number.isNaN(when)) return Math.max(0, when - Date.now())
+  return null
+}
+
+// One download attempt. Resolves destPath on HTTP 200. Rejects with an Error
+// whose `.transient` flag says whether a retry could plausibly help (429/5xx
+// and network-level errors are transient; a 404 is not) and `.retryAfterMs`
+// carries a parsed Retry-After hint when the server sent one.
+function downloadInstallScriptOnce(commit, destPath, opts = {}) {
   const owner = opts.repoOwner || DEFAULT_REPO_OWNER
   const repo = opts.repoName || DEFAULT_REPO_NAME
   const scriptName = installScriptName()
   const url = `https://raw.githubusercontent.com/${owner}/${repo}/${commit}/scripts/${scriptName}`
+  // A real User-Agent materially lowers raw.githubusercontent throttling versus
+  // an empty/anonymous UA (which 429s aggressively).
+  const reqOpts = { headers: { 'User-Agent': 'hermes-lite-bootstrap', Accept: '*/*' } }
   return new Promise((resolve, reject) => {
     fs.mkdirSync(path.dirname(destPath), { recursive: true })
     const tmpPath = destPath + '.tmp'
-    const out = fs.createWriteStream(tmpPath)
-    https
-      .get(url, res => {
-        if (res.statusCode === 301 || res.statusCode === 302) {
-          // GitHub raw shouldn't redirect for a SHA URL, but follow once
-          // defensively.
-          out.close()
-          fs.unlinkSync(tmpPath)
-          https
-            .get(res.headers.location, res2 => {
-              if (res2.statusCode !== 200) {
-                reject(
-                  new Error(
-                    `Failed to download ${scriptName}: HTTP ${res2.statusCode} from redirect ${res.headers.location}`
-                  )
-                )
-                return
-              }
-              const out2 = fs.createWriteStream(tmpPath)
-              res2.pipe(out2)
-              out2.on('finish', () => {
-                out2.close()
-                fs.renameSync(tmpPath, destPath)
-                resolve(destPath)
-              })
-              out2.on('error', reject)
-            })
-            .on('error', reject)
-          return
-        }
-        if (res.statusCode !== 200) {
-          out.close()
-          try {
-            fs.unlinkSync(tmpPath)
-          } catch {
-            void 0
-          }
-          reject(new Error(`Failed to download ${scriptName}: HTTP ${res.statusCode} from ${url}`))
-          return
-        }
-        res.pipe(out)
-        out.on('finish', () => {
-          out.close()
+
+    const fail = (err, { statusCode, retryAfterMs } = {}) => {
+      try {
+        fs.unlinkSync(tmpPath)
+      } catch {
+        void 0
+      }
+      if (statusCode != null) err.statusCode = statusCode
+      // No statusCode → network-level error (ECONNRESET/ETIMEDOUT/…): transient.
+      err.transient = statusCode == null || TRANSIENT_HTTP_STATUS.has(statusCode)
+      if (retryAfterMs != null) err.retryAfterMs = retryAfterMs
+      reject(err)
+    }
+
+    const onResponse = (res, sourceUrl) => {
+      if ((res.statusCode === 301 || res.statusCode === 302) && res.headers.location) {
+        // GitHub raw shouldn't redirect for a SHA URL, but follow once defensively.
+        res.resume()
+        https
+          .get(res.headers.location, reqOpts, r2 => onResponse(r2, res.headers.location))
+          .on('error', e => fail(e))
+        return
+      }
+      if (res.statusCode !== 200) {
+        res.resume()
+        fail(new Error(`Failed to download ${scriptName}: HTTP ${res.statusCode} from ${sourceUrl}`), {
+          statusCode: res.statusCode,
+          retryAfterMs: parseRetryAfterMs(res.headers['retry-after']),
+        })
+        return
+      }
+      const out = fs.createWriteStream(tmpPath)
+      res.pipe(out)
+      out.on('finish', () => {
+        out.close()
+        try {
           fs.renameSync(tmpPath, destPath)
           resolve(destPath)
-        })
-        out.on('error', err => {
-          try {
-            fs.unlinkSync(tmpPath)
-          } catch {
-            void 0
-          }
-          reject(err)
-        })
-      })
-      .on('error', err => {
-        try {
-          fs.unlinkSync(tmpPath)
-        } catch {
-          void 0
+        } catch (e) {
+          fail(e)
         }
-        reject(err)
       })
+      out.on('error', e => fail(e))
+    }
+
+    https.get(url, reqOpts, res => onResponse(res, url)).on('error', e => fail(e))
   })
+}
+
+// Fetch install.ps1/install.sh from GitHub raw at the pinned (immutable) commit,
+// retrying transient failures (429 throttling, 5xx, network blips) with
+// exponential backoff. Without this, a single rate-limit response bricks the
+// first-launch install on a clean machine (there's no installed-agent checkout
+// to fall back to yet). `_attempt`/`_sleep`/`maxAttempts` are injectable for tests.
+async function downloadInstallScript(commit, destPath, opts = {}) {
+  const attempt = opts._attempt || downloadInstallScriptOnce
+  const sleepFn = opts._sleep || sleep
+  const maxAttempts = opts.maxAttempts || DOWNLOAD_MAX_ATTEMPTS
+  let lastErr
+  for (let i = 1; i <= maxAttempts; i++) {
+    try {
+      return await attempt(commit, destPath, opts)
+    } catch (err) {
+      lastErr = err
+      if (!err.transient || i === maxAttempts) throw err
+      const backoff =
+        err.retryAfterMs != null
+          ? Math.min(err.retryAfterMs, DOWNLOAD_MAX_BACKOFF_MS)
+          : Math.min(DOWNLOAD_BASE_BACKOFF_MS * 2 ** (i - 1), DOWNLOAD_MAX_BACKOFF_MS)
+      if (typeof opts.onRetry === 'function') {
+        opts.onRetry({ attempt: i, maxAttempts, delayMs: backoff, error: err })
+      }
+      await sleepFn(backoff)
+    }
+  }
+  throw lastErr
 }
 
 async function resolveInstallScript({
@@ -237,6 +275,14 @@ async function resolveInstallScript({
     await _download(installStamp.commit, cached, {
       repoOwner: installStamp.repoOwner,
       repoName: installStamp.repoName,
+      onRetry: ({ attempt, maxAttempts, delayMs, error }) => {
+        emit({
+          type: 'log',
+          line:
+            `[bootstrap] download attempt ${attempt}/${maxAttempts} failed ` +
+            `(${error.message}); retrying in ${Math.round(delayMs / 1000)}s`
+        })
+      },
     })
     emit({ type: 'log', line: `[bootstrap] saved to ${cached}` })
     return { path: cached, source: 'download', commit: installStamp.commit, kind: installScriptKind() }
